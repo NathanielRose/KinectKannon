@@ -7,6 +7,7 @@ using KinectKannon;
 using KinectKannon.Control;
 using System.Windows.Input;
 using System.Windows;
+using System.Speech.Synthesis;
 using J2i.Net.XInputWrapper;
 namespace KinectKannon.Control
 {
@@ -16,14 +17,16 @@ namespace KinectKannon.Control
         private static bool s_PanTiltTooFarUp = false;
         private static bool s_PanTiltTooFarLeft = false;
         private static bool s_PanTiltTooFarRight = false;
+        private static SpeechSynthesizer s_VoiceSynth = new SpeechSynthesizer();
         public const uint PAN_TILT_SPEED_LIMIT = 60;
         private const int XINPUT_RESTING_X = -1200;
         private const int XINPUT_MAX_X = 32768;
         private const int XINPUT_MAX_Y = 32768;
         private const int XINPUT_RESTING_Y = -2631;
         private const int VIBRATION_INTENSITY = 50;
-        
-   
+        //the user must wait 5 secodns between arming and disarming the system
+        private static TimeSpan s_DisarmWaitTime = new TimeSpan(0,0,5);
+        private static DateTime? s_LastDisarmTime = null;
 
         /// <summary>
         /// The time the valve will remain open on a single fire
@@ -164,7 +167,7 @@ namespace KinectKannon.Control
                 if (mainWindow.CannonXVelocity >= -1 * PAN_TILT_SPEED_LIMIT && !s_PanTiltTooFarRight && mainWindow.TrackingMode == TrackingMode.MANUAL)
                 {
 
-                    mainWindow.CannonXVelocity -= convertedXboxInputX;
+                    mainWindow.CannonXVelocity = convertedXboxInputX;
                     //set too far to false. if its stil too far the next key event handler will set to true
                     s_PanTiltTooFarLeft = false;
                     panTilt.PanX(mainWindow.CannonXVelocity);
@@ -263,8 +266,22 @@ namespace KinectKannon.Control
                 else{
                     mainWindow.DisplayMode = DisplayMode.INFRARED;
                 }
-                
-                mainWindow.CameraFeedImageSource.Source = mainWindow.ImageSource;
+
+                //check to see if this is the UI thread, xbox controller uses different thread
+                if (!mainWindow.Dispatcher.CheckAccess())
+                {
+                    await mainWindow.Dispatcher.BeginInvoke((Action)(()=>{
+                    
+                        mainWindow.CameraFeedImageSource.Source = mainWindow.ImageSource;
+                    
+                    }));
+                    
+                }
+                else
+                {
+                    //we're on the UI thread directly change the UI element image source, keyboard stroke hits this path
+                    mainWindow.CameraFeedImageSource.Source = mainWindow.ImageSource;
+                }
             }
 
             if (handHeldController.IsDPadRightPressed)
@@ -321,17 +338,43 @@ namespace KinectKannon.Control
                 throw ex;
             }
 
-            if (key == Key.P || (handHeldController.IsLeftShoulderPressed & handHeldController.IsRightShoulderPressed))
+            if ((key == Key.P || (handHeldController.IsLeftShoulderPressed & handHeldController.IsRightShoulderPressed)) && firingController.VirtualSafetyOn)
             {
-                //toggle the safety
-                firingController.VirtualSafetyOn = !firingController.VirtualSafetyOn;
+
+
+
+                //keep safety from being toggled too fast
+                if ((DateTime.Now - s_LastDisarmTime > s_DisarmWaitTime) || s_LastDisarmTime == null)
+                {
+                    s_LastDisarmTime = DateTime.Now;
+                    //toggle the safety
+                    firingController.VirtualSafetyOn = !firingController.VirtualSafetyOn;
+                    s_VoiceSynth.SelectVoice("Microsoft Hazel Desktop");
+                    s_VoiceSynth.SpeakAsync("System Armed, Pull both triggers simultaneously to fire!");
+                }
+
+                
+                
                 //handHeldController.Vibrate(40.0, 40.0, 10.0);
+            }
+            else if ((key == Key.P || (handHeldController.IsLeftShoulderPressed & handHeldController.IsRightShoulderPressed)) && !firingController.VirtualSafetyOn)
+            {
+                //keep safety from being toggled too fast
+                if (DateTime.Now - s_LastDisarmTime > s_DisarmWaitTime)
+                {
+                    s_LastDisarmTime = DateTime.Now;
+                    //toggle the safety
+                    firingController.VirtualSafetyOn = !firingController.VirtualSafetyOn;
+                    s_VoiceSynth.SelectVoice("Microsoft Hazel Desktop");
+                    s_VoiceSynth.SpeakAsync("System Disarmed!");
+                }
+                
             }
             //MAYBE WE SHOULD PICK A HARDER TO PRESS KEY THAN THE SPACE BAR?
             if (key == Key.Space || (handHeldController.RightTrigger > 250 && handHeldController.LeftTrigger > 250))
             {
                 handHeldController.Vibrate(VIBRATION_INTENSITY, VIBRATION_INTENSITY, new TimeSpan(1));
-                await firingController.Fire(300);
+                await firingController.Fire(350);
             }
 
             
